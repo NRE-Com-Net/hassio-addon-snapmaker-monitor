@@ -7,10 +7,12 @@ How could we improve the script and the addon further
 ### Todo
 
 - [ ] Look into the [Luban methods][Luban]
+- [ ] Better documentation
 
 ### In Progress
 
 - [ ] Add MQTT functionality
+- [ ] Switch to supervisor core api
 
 ### Done ✓
 
