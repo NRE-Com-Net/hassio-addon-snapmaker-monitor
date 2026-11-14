@@ -16,7 +16,7 @@ RUN \
   python3-dev=3.12.11-r0 \
   \
   && apk add --no-cache \
-  python3=3.12.11-r0 \
+  python3=3.12.16-r0 \
   \
   && pip3 install -r /tmp/requirements.txt \
   \
