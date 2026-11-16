@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/hassio-addons/base:18.1.0
+ARG BUILD_FROM=ghcr.io/hassio-addons/base:21.0.11
 # hadolint ignore=DL3006
 FROM ${BUILD_FROM}
 
@@ -8,19 +8,18 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY requirements.txt /tmp/
 
 # Setup base
-# hadolint ignore=DL3042
+# requests and paho-mqtt are pure Python, so no compiler toolchain is needed.
 RUN \
   apk add --no-cache --virtual .build-dependencies \
-  build-base=0.5-r3 \
-  py3-pip=25.1.1-r0 \
-  python3-dev=3.12.11-r0 \
+  py3-pip=26.1.2-r0 \
   \
   && apk add --no-cache \
-  python3=3.12.11-r0 \
+  python3=3.14.10-r1 \
   \
-  && pip3 install -r /tmp/requirements.txt \
+  && pip3 install --no-cache-dir -r /tmp/requirements.txt \
   \
-  && apk del --no-cache --purge .build-dependencies
+  && apk del --no-cache --purge .build-dependencies \
+  && rm -f /tmp/requirements.txt
 
 # Copy root filesystem
 COPY rootfs /
@@ -46,11 +45,11 @@ LABEL \
   maintainer="Steven 'NemesisRE' Kurz <nemesissre@gmail.com>" \
   org.opencontainers.image.title="${BUILD_NAME}" \
   org.opencontainers.image.description="${BUILD_DESCRIPTION}" \
-  org.opencontainers.image.vendor="Home Assistant Community Add-ons" \
+  org.opencontainers.image.vendor="NRE.Com.Net" \
   org.opencontainers.image.authors="Steven 'NemesisRE' Kurz <nemesissre@gmail.com>" \
   org.opencontainers.image.licenses="MIT" \
   org.opencontainers.image.source="https://github.com/${BUILD_REPOSITORY}" \
-  org.opencontainers.image.documentation="https://github.com/${BUILD_REPOSITORY}/blob/main/README.md" \
+  org.opencontainers.image.documentation="https://github.com/${BUILD_REPOSITORY}/blob/main/snapmaker-monitor/DOCS.md" \
   org.opencontainers.image.created=${BUILD_DATE} \
   org.opencontainers.image.revision=${BUILD_REF} \
   org.opencontainers.image.version=${BUILD_VERSION}

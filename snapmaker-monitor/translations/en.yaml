@@ -1,0 +1,34 @@
+---
+configuration:
+  log_level:
+    name: Log level
+    description: The amount of logging the add-on should do.
+  sm_ip:
+    name: Snapmaker IP address
+    description: The IP address of your Snapmaker 2.0.
+  sm_port:
+    name: Snapmaker API port
+    description: The port of the Snapmaker 2.0 HTTP API. The default is 8080.
+  ha_webhook_id:
+    name: Home Assistant webhook ID
+    description: >-
+      The ID of the webhook trigger that receives the printer status, for
+      example wh-snapmaker. Leave empty to disable the webhook.
+  mqtt_broker:
+    name: MQTT broker
+    description: >-
+      Host name or IP address of the MQTT broker. Leave empty to use the
+      Mosquitto broker add-on automatically, if it is installed and no
+      webhook is set.
+  mqtt_port:
+    name: MQTT port
+    description: The port of the MQTT broker. The default is 1883.
+  mqtt_topic:
+    name: MQTT topic
+    description: The topic the printer status is published to.
+  mqtt_user:
+    name: MQTT username
+    description: Username for the MQTT broker, if it requires authentication.
+  mqtt_password:
+    name: MQTT password
+    description: Password for the MQTT broker.
