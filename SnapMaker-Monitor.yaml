@@ -1,87 +1,106 @@
 ---
-# SnapMaker-Monitor sensror configuration for Home Assistant
-# This file is used to define the sensor that will receive updates from the SnapMaker Monitor
-# and provide the necessary attributes for monitoring the SnapMaker 2.0 printer.
-- triggers:
-    - trigger: webhook
-      webhook_id: wh-snapmaker
-      allowed_methods:
-        - POST
-        - PUT
+# Snapmaker Monitor: example Home Assistant configuration
+#
+# Put this file into your packages folder, for example
+# /config/packages/snapmaker.yaml, and enable packages in configuration.yaml:
+#
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Use the webhook OR the MQTT part, depending on how the add-on sends the
+# status. The automation at the end is optional.
+
+# ------------------------------------------------------------------------------
+# Webhook: set the add-on option ha_webhook_id to "wh-snapmaker"
+# ------------------------------------------------------------------------------
+template:
+  - triggers:
+      - trigger: webhook
+        webhook_id: wh-snapmaker
+        allowed_methods:
+          - POST
+          - PUT
+        local_only: true
+    sensor:
+      - name: "SnapMaker 2.0"
+        icon: mdi:printer-3d
+        unique_id: "sensor.snapmaker_state"
+        state: "{{ trigger.json.get('status', 'UNAVAILABLE') }}"
+        attributes:
+          ip: "{{ trigger.json.get('ip') }}"
+          x: "{{ trigger.json.get('x') }}"
+          y: "{{ trigger.json.get('y') }}"
+          z: "{{ trigger.json.get('z') }}"
+          homed: "{{ trigger.json.get('homed') }}"
+          offsetX: "{{ trigger.json.get('offsetX') }}"
+          offsetY: "{{ trigger.json.get('offsetY') }}"
+          offsetZ: "{{ trigger.json.get('offsetZ') }}"
+          toolHead: "{{ trigger.json.get('toolHead') }}"
+          nozzleTemperature: "{{ trigger.json.get('nozzleTemperature') }}"
+          nozzleTargetTemperature: "{{ trigger.json.get('nozzleTargetTemperature') }}"
+          nozzleTemperature2: "{{ trigger.json.get('nozzleTemperature2') }}"
+          nozzleTargetTemperature2: "{{ trigger.json.get('nozzleTargetTemperature2') }}"
+          heatedBedTemperature: "{{ trigger.json.get('heatedBedTemperature') }}"
+          heatedBedTargetTemperature: "{{ trigger.json.get('heatedBedTargetTemperature') }}"
+          isFilamentOut: "{{ trigger.json.get('isFilamentOut') }}"
+          spindleSpeed: "{{ trigger.json.get('spindleSpeed') }}"
+          laserFocalLength: "{{ trigger.json.get('laserFocalLength') }}"
+          laserPower: "{{ trigger.json.get('laserPower') }}"
+          laserCamera: "{{ trigger.json.get('laserCamera') }}"
+          laser10WErrorState: "{{ trigger.json.get('laser10WErrorState') }}"
+          workSpeed: "{{ trigger.json.get('workSpeed') }}"
+          printStatus: "{{ trigger.json.get('printStatus') }}"
+          fileName: "{{ trigger.json.get('fileName') }}"
+          totalLines: "{{ trigger.json.get('totalLines') }}"
+          currentLine: "{{ trigger.json.get('currentLine') }}"
+          progress: "{{ trigger.json.get('progress') }}"
+          estimatedTime: "{{ trigger.json.get('estimatedTime') }}"
+          elapsedTime: "{{ trigger.json.get('elapsedTime') }}"
+          remainingTime: "{{ trigger.json.get('remainingTime') }}"
+          enclosure: "{{ (trigger.json.get('moduleList') or {}).get('enclosure') }}"
+          rotaryModule: "{{ (trigger.json.get('moduleList') or {}).get('rotaryModule') }}"
+          emergencyStopButton: "{{ (trigger.json.get('moduleList') or {}).get('emergencyStopButton') }}"
+          airPurifier: "{{ (trigger.json.get('moduleList') or {}).get('airPurifier') }}"
+          isEnclosureDoorOpen: "{{ trigger.json.get('isEnclosureDoorOpen') }}"
+          doorSwitchCount: "{{ trigger.json.get('doorSwitchCount') }}"
+
+# ------------------------------------------------------------------------------
+# MQTT: the add-on publishes a retained JSON message to "snapmaker/status"
+# ------------------------------------------------------------------------------
+mqtt:
   sensor:
     - name: "SnapMaker 2.0"
       icon: mdi:printer-3d
-      unique_id: "sensor.snapmaker_state"
-      state: "{{ (trigger.json | from_json)['status'] }}"
-      attributes:
-        ip: "{{ (trigger.json | from_json)['ip'] }}"
-        x: "{{ (trigger.json | from_json)['x'] }}"
-        y: "{{ (trigger.json | from_json)['y'] }}"
-        z: "{{ (trigger.json | from_json)['z'] }}"
-        homed: "{{ (trigger.json | from_json)['homed'] }}"
-        offsetX: "{{ (trigger.json | from_json)['offsetX'] }}"
-        offsetY: "{{ (trigger.json | from_json)['offsetY'] }}"
-        offsetZ: "{{ (trigger.json | from_json)['offsetZ'] }}"
-        toolHead: "{{ (trigger.json | from_json)['toolHead'] }}"
-        nozzleTemperature: "{{ (trigger.json | from_json)['nozzleTemperature'] }}"
-        nozzleTargetTemperature: "{{ (trigger.json | from_json)['nozzleTargetTemperature'] }}"
-        nozzleTemperature2: "{{ (trigger.json | from_json)['nozzleTemperature2'] }}"
-        nozzleTargetTemperature2: "{{ (trigger.json | from_json)['nozzleTargetTemperature2'] }}"
-        heatedBedTemperature: "{{ (trigger.json | from_json)['heatedBedTemperature'] }}"
-        heatedBedTargetTemperature: "{{ (trigger.json | from_json)['heatedBedTargetTemperature'] }}"
-        isFilamentOut: "{{ (trigger.json | from_json)['isFilamentOut'] }}"
-        spindleSpeed: "{{ (trigger.json | from_json)['spindleSpeed'] }}"
-        laserFocalLength: "{{ (trigger.json | from_json)['laserFocalLength'] }}"
-        laserPower: "{{ (trigger.json | from_json)['laserPower'] }}"
-        laserCamera: "{{ (trigger.json | from_json)['laserCamera'] }}"
-        laser10WErrorState: "{{ (trigger.json | from_json)['laser10WErrorState'] }}"
-        workSpeed: "{{ (trigger.json | from_json)['workSpeed'] }}"
-        printStatus: "{{ (trigger.json | from_json)['printStatus'] }}"
-        fileName: "{{ (trigger.json | from_json)['fileName'] }}"
-        totalLines: "{{ (trigger.json | from_json)['totalLines'] }}"
-        currentLine: "{{ (trigger.json | from_json)['currentLine'] }}"
-        progress: "{{ (trigger.json | from_json)['progress'] }}"
-        estimatedTime: "{{ (trigger.json | from_json)['estimatedTime'] }}"
-        elapsedTime: "{{ (trigger.json | from_json)['elapsedTime'] }}"
-        remainingTime: "{{ (trigger.json | from_json)['remainingTime'] }}"
-        enclosure: "{{ (trigger.json | from_json)['moduleList']['enclosure'] }}"
-        rotaryModule: "{{ (trigger.json | from_json)['moduleList']['rotaryModule'] }}"
-        emergencyStopButton: "{{ (trigger.json | from_json)['moduleList']['emergencyStopButton'] }}"
-        airPurifier: "{{ (trigger.json | from_json)['moduleList']['airPurifier'] }}"
-        isEnclosureDoorOpen: "{{ (trigger.json | from_json)['isEnclosureDoorOpen'] }}"
-        doorSwitchCount: "{{ (trigger.json | from_json)['doorSwitchCount'] }}"
+      unique_id: "snapmaker_state_mqtt"
+      state_topic: "snapmaker/status"
+      value_template: "{{ value_json.status }}"
+      json_attributes_topic: "snapmaker/status"
 
----
-alias: Snapmaker Monitor
-description: "Switch add-on on/off based on snapmaker smart plug state"
-triggers:
-  - trigger: state
-    entity_id:
-      - switch.NAME
-    from: null
-conditions: []
-actions:
-  - choose:
-      - conditions:
-          - condition: device
-            type: is_on
-            device_id: ID
-            entity_id: ID
-            domain: switch
-        sequence:
-          - action: hassio.addon_start
-            metadata: {}
-            data:
-              addon: 71611ba3_snapmaker-monitor
-      - conditions:
-          - condition: device
-            type: is_off
-            device_id: ID
-            entity_id: ID
-            domain: switch
-        sequence:
+# ------------------------------------------------------------------------------
+# Optional: start and stop the add-on together with the printer's smart plug.
+# Replace switch.snapmaker_plug with the entity of your plug.
+# ------------------------------------------------------------------------------
+automation:
+  - alias: Snapmaker Monitor
+    description: "Start and stop the add-on with the Snapmaker smart plug"
+    triggers:
+      - trigger: state
+        entity_id: switch.snapmaker_plug
+        to:
+          - "on"
+          - "off"
+    actions:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: switch.snapmaker_plug
+                state: "on"
+            sequence:
+              - action: hassio.addon_start
+                data:
+                  addon: 71611ba3_snapmaker-monitor
+        default:
           - action: hassio.addon_stop
-            metadata: {}
             data:
               addon: 71611ba3_snapmaker-monitor
-mode: restart
+    mode: restart
