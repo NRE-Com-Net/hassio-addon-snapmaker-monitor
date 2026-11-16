@@ -12,11 +12,20 @@ on:
   release:
     types:
       - published
+      - released
 
 permissions: {}
 
 jobs:
   ci:
+    # A release fires "published" (also for pre-releases) and "released"
+    # (when it is, or becomes, a full release). Build pre-releases on
+    # "published" and full releases on "released", so marking a pre-release
+    # as full release later still deploys it, and nothing runs twice.
+    if: >-
+      github.event_name != 'release'
+      || github.event.action == 'released'
+      || github.event.release.prerelease
     permissions:
       actions: read
       contents: read
