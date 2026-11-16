@@ -1,290 +1,364 @@
-#!/usr/bin/python3
-# Requires: sudo pip3 install requests
-# Original: https://github.com/NiteCrwlr/playground/blob/main/SNStatus/SNStatusV2.py
-#
+#!/usr/bin/env python3
+"""Read the status of a Snapmaker 2.0 and send it to Home Assistant.
 
-import os
-import sys
-import socket
+The status is sent to a Home Assistant webhook, to an MQTT topic, or both.
+
+Based on the original script by NiteCrwlr:
+https://github.com/NiteCrwlr/playground/blob/main/SNStatus/SNStatusV2.py
+"""
+
 import ipaddress
-import requests
 import json
+import logging
+import os
+import socket
+import sys
 import time
 from datetime import timedelta
+
 import paho.mqtt.client as mqtt
-import logging
+import requests
 
-# Configure logging
-log_level = os.environ.get("LOG_LEVEL", 'INFO').upper()
-numeric_level = getattr(logging, log_level, None)
-if not isinstance(numeric_level, int):
-  print(f"Invalid log level: {log_level}, defaulting to INFO")
-  numeric_level = logging.INFO
-logging.basicConfig(level=numeric_level, format='%(asctime)s - %(levelname)s - %(message)s')
+# ------------------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------------------
+# The add-on offers the bashio levels, map the ones Python does not know.
+_LEVEL_ALIASES = {"TRACE": "DEBUG", "NOTICE": "INFO", "FATAL": "CRITICAL"}
+_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+_log_level = _LEVEL_ALIASES.get(_log_level, _log_level)
+_numeric_level = getattr(logging, _log_level, None)
+if not isinstance(_numeric_level, int):
+    _numeric_level = logging.INFO
+logging.basicConfig(
+    level=_numeric_level,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+log = logging.getLogger("snapmaker-monitor")
 
-RETRY_COUNTER = 0
+# ------------------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------------------
+IN_ADDON = os.path.exists("/data/options.json")
+
 DISCOVER_PORT = 20054
 BROADCAST_ADDRESS = "255.255.255.255"
 UDP_TIMEOUT = 1.0
 UDP_RETRIES = 5
 BUFFER_SIZE = 1024
+HTTP_TIMEOUT = 10  # seconds
+POLL_INTERVAL = 60  # seconds
+REACHABLE_RETRIES = 5
 
-# Read config from ENV VARS or Set manually
-MQTT_BROKER = os.environ.get("MQTT_BROKER", '')
-MQTT_PORT = int(os.environ.get("MQTT_PORT", '1883'))
-MQTT_TOPIC = os.environ.get("MQTT_TOPIC", 'snapmaker/status')
-MQTT_USER = os.environ.get("MQTT_USER", '')
-MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", '')
-HA_TOKEN = os.environ.get("SUPERVISOR_TOKEN", '')  # Set your HomeAssistant API Token
-if os.path.exists("/data/options.json"):
-  HA_WEBHOOK_ID = os.environ.get("HA_WEBHOOK_ID")  # HomeAssistant WebHook ID
-  if HA_WEBHOOK_ID is not None:
-    HA_WEBHOOK_URL = "http://supervisor/core/api/webhook/" + HA_WEBHOOK_ID
-  else:
-    logging.error("HA_WEBHOOK_ID environment variable is not set. HA_WEBHOOK_URL will be empty.")
-    HA_WEBHOOK_URL = ''
+SM_IP = os.environ.get("SM_IP", "")
+SM_PORT = int(os.environ.get("SM_PORT") or 8080)
+
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "")
+MQTT_PORT = int(os.environ.get("MQTT_PORT") or 1883)
+MQTT_TOPIC = os.environ.get("MQTT_TOPIC") or "snapmaker/status"
+MQTT_USER = os.environ.get("MQTT_USER", "")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
+
+SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
+HA_WEBHOOK_ID = os.environ.get("HA_WEBHOOK_ID", "")
+if IN_ADDON and HA_WEBHOOK_ID:
+    # Go through the Supervisor proxy to Home Assistant Core. The proxy needs
+    # the add-on's Supervisor token, and Core sees the request as local, so
+    # webhooks with `local_only: true` work as well.
+    HA_WEBHOOK_URL = f"http://supervisor/core/api/webhook/{HA_WEBHOOK_ID}"
 else:
-  HA_WEBHOOK_URL = os.environ.get("HA_WEBHOOK_URL", '')  # Set your HomeAssistant WebHook URL
-CONNECT_IP = os.environ.get("SM_IP", '')  # Set your SnapMaker IP or let it discover
-CONNECT_PORT = os.environ.get("SM_PORT", '8080')  # Set your SnapMaker API Port (default is 8080)
-if os.path.exists("/data/options.json"):
-  TOKEN_FILE = os.path.join("/data", "SMtoken.txt")  # inside Docker
-else:
-  TOKEN_FILE = os.path.join(os.getcwd(), "SMtoken.txt")  # not in Docker
+    HA_WEBHOOK_URL = os.environ.get("HA_WEBHOOK_URL", "")
 
-def main():
-  """Main program function."""
-  global CONNECT_IP
+TOKEN_FILE = (
+    os.path.join("/data", "SMtoken.txt") if IN_ADDON else os.path.join(os.getcwd(), "SMtoken.txt")
+)
 
-  if not CONNECT_IP:
-    logging.info("connectIP not set, will try to discover")
-    CONNECT_IP = updDiscover()
-
-  if not validate_ip_address(CONNECT_IP):
-    logging.error(f"connectIP ({CONNECT_IP}) is not valid")
-    sys.exit(1)
-
-  retry_count = 0
-  while retry_count < 5:
-    if not is_reachable(CONNECT_IP, CONNECT_PORT):
-      logging.warning(f"Set IP ({CONNECT_IP}) not reachable, retrying in {retry_count} minutes")
-      postIt('{"status": "UNAVAILABLE"}')
-      time.sleep(retry_count * 60)  # Wait for an increasing amount of time
-      retry_count += 1
-    else:
-      break  # If reachable, exit the loop
-  else:  # This else belongs to the while loop, executed if the loop finishes without a break
-    logging.error(f"Set IP ({CONNECT_IP}) not reachable after multiple retries")
-    postIt('{"status": "UNAVAILABLE"}')
-    sys.exit(1)
-
-  global SM_TOKEN
-  SM_TOKEN = getSMToken(CONNECT_IP)
-
-  logging.info(f"Connecting with Token: {SM_TOKEN}")
-  sm_status = readStatus(SM_TOKEN)
-  postIt(sm_status)
+TOOLHEADS = {
+    "TOOLHEAD_CNC_1": "CNC",
+    "TOOLHEAD_LASER_1": "Laser",
+}
 
 
-def getSMToken(connect_ip):
-  """Gets the SnapMaker token, either from file or by generating a new one."""
-  sm_url = f"http://{connect_ip}:{CONNECT_PORT}/api/v1/connect"
-
-  try:
-    with open(TOKEN_FILE, "r+") as file:
-      sm_token = file.read().strip()
-      if sm_token:
-        # Connect to SnapMaker with saved token
-        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        form_data = {'token': sm_token}
-        try:
-          requests.post(sm_url, data=form_data, headers=headers)
-          return sm_token
-        except requests.exceptions.RequestException as e:
-          logging.error(f"Error connecting to Snapmaker with saved token: {e}")
-          return None  # Or handle the error as appropriate
-
-      else:
-        # Create token
-        logging.info("smToken not set, will try to generate")
-        while True:
-          try:
-            r = requests.post(sm_url)
-            r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-            logging.info("Please authorize on Touchscreen.")
-            time.sleep(10)
-
-            if "Failed" in r.text:
-              logging.error(r.text)
-              logging.error("Binding failed, please restart script")
-              sys.exit(1)
-
-            sm_token = json.loads(r.text).get("token")
-            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-            form_data = {'token': sm_token}
-            r = requests.post(sm_url, data=form_data, headers=headers)
-            r.raise_for_status()
-
-            if json.loads(r.text).get("token") == sm_token:
-              file.seek(0)
-              file.write(sm_token)
-              file.truncate()
-              logging.info(f"Token received and saved to {TOKEN_FILE}.")
-              return sm_token
-          except requests.exceptions.RequestException as e:
-            logging.error(f"Request failed: {e}")
-            time.sleep(20)  # Wait before retrying
-          except json.JSONDecodeError as e:
-            logging.error(f"Failed to decode JSON: {e}")
-            sys.exit(1)
-  except FileNotFoundError:
-    try:
-      # Create file and retry
-      open(TOKEN_FILE, "w+").close()  # Create the file and immediately close it
-      return getSMToken(connect_ip)  # Recursive call after creating the file
-    except OSError as e:
-      logging.error(f"Unable to create token file: {e}")
-      sys.exit(1)
-
-
-def readStatus(sm_token):
-  """Reads the status from the SnapMaker."""
-  logging.info("Reading SnapMaker Status...")
-  sm_api = f"http://{CONNECT_IP}:{CONNECT_PORT}/api/v1/status?token="
-  try:
-    r = requests.get(sm_api + sm_token)
-    r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-    sm_status = json.loads(r.text)
-  except requests.exceptions.RequestException as e:
-    logging.error(f"Request failed: {e}")
-    return {"status": "UNAVAILABLE", "error": str(e)}  # Return an error status
-  except json.JSONDecodeError as e:
-    logging.error(f"Failed to decode JSON: {e}")
-    return {"status": "UNAVAILABLE", "error": str(e)}
-
-  logging.debug(f"SnapMaker Status: {sm_status}")
-
-  sm_status['ip'] = CONNECT_IP
-
-  # Toolhead detection
-  tool_head = sm_status.get('toolHead')
-  if tool_head == "TOOLHEAD_3DPRINTING_1":
-    if sm_status.get('nozzleTemperature') is None:
-      logging.debug("Current Toolhead: Dual Extruder")
-      sm_status['toolHead'] = 'Dual Extruder'
-      sm_status['nozzleTemperature'] = sm_status.get('nozzleTemperature1')
-      sm_status['nozzleTargetTemperature'] = sm_status.get('nozzleTargetTemperature1')
-    else:
-      logging.debug("Current Toolhead: Extruder")
-      sm_status['toolHead'] = "Extruder"
-  elif tool_head == "TOOLHEAD_CNC_1":
-    logging.debug("Current Toolhead: CNC")
-    sm_status['toolHead'] = 'CNC'
-  elif tool_head == "TOOLHEAD_LASER_1":
-    logging.debug("Current Toolhead: Laser")
-    sm_status['toolHead'] = 'Laser'
-
-  # Format progress and time fields
-  sm_status['progress'] = "{:0.1f}".format(sm_status.get("progress", 0) * 100)
-  sm_status['estimatedTime'] = str(timedelta(seconds=sm_status.get("estimatedTime", 0)))
-  sm_status['elapsedTime'] = str(timedelta(seconds=sm_status.get("elapsedTime", 0)))
-  sm_status['remainingTime'] = str(timedelta(seconds=sm_status.get("remainingTime", 0)))
-
-  return sm_status
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+def mask(secret):
+    """Return a shortened version of a secret that is safe to log."""
+    if not secret:
+        return "<none>"
+    return f"{secret[:4]}…" if len(secret) > 8 else "****"
 
 
 def validate_ip_address(ip_string):
-  """Checks if the provided string is a valid IP address."""
-  try:
-    ipaddress.ip_address(ip_string)
-    return True
-  except ValueError:
-    return False
-
-
-def postIt(status):
-  """Posts the status to the HomeAssistant webhook."""
-  json_status = json.dumps(status, default=str, sort_keys=False, indent=2)
-  session = requests.Session()
-  session.verify = False  # Disable SSL verification
-  logging.debug(f"Status: {json_status}")
-
-  if HA_WEBHOOK_URL:
-    # Check if HA_WEBHOOK_URL is a valid URL
+    """Check whether the given string is a valid IP address."""
     try:
-      result = requests.compat.urlparse(HA_WEBHOOK_URL)
-      if not all([result.scheme, result.netloc]):
-        raise ValueError
+        ipaddress.ip_address(ip_string)
     except ValueError:
-      logging.error(f"HA_WEBHOOK_URL ({HA_WEBHOOK_URL}) is not a valid URL, cannot post status.")
-      sys.exit(1)
-
-    try:
-      logging.info(f"Sending State...")
-      requests.post(HA_WEBHOOK_URL, json=json_status)
-      logging.info("State sent successfully to HomeAssistant webhook.")
-    except requests.exceptions.RequestException as e:
-      logging.error(f"Could not connect to HomeAssistant on {HA_WEBHOOK_URL}: {e}")
-
-  elif MQTT_BROKER:
-    try:
-      client = mqtt.Client()
-      if MQTT_USER:
-        logging.info(f"Sending State...")
-        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.publish(MQTT_TOPIC, json_status)
-        client.disconnect()
-        logging.info(f"State sent successfully to MQTT topic.")
-    except Exception as e:
-      logging.error(f"Could not connect to MQTT broker {MQTT_BROKER}: {e}")
+        return False
+    return True
 
 
 def is_reachable(ip_address, api_port):
-  """Checks if the given IP address and port are reachable."""
-  try:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-      sock.settimeout(1)  # Timeout in seconds
-      sock.connect((ip_address, int(api_port)))
-      return True
-  except Exception:
-    return False
+    """Check whether the given IP address and port accept TCP connections."""
+    try:
+        with socket.create_connection((ip_address, int(api_port)), timeout=1):
+            return True
+    except OSError:
+        return False
 
 
-def updDiscover():
-  """Check status of Snapmaker 2.0 via UDP Discovery."""
-  global RETRY_COUNTER
-  msg = b'discover'
-  UDPClientSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-  UDPClientSocket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-  UDPClientSocket.settimeout(UDP_TIMEOUT)
-  UDPClientSocket.sendto(msg, (BROADCAST_ADDRESS, DISCOVER_PORT))
-  try:
-    reply, serverAddress = UDPClientSocket.recvfrom(BUFFER_SIZE)
-    elements = str(reply).split('|')
-    return (elements[0]).replace('\'', '')
-  except socket.timeout:
-    RETRY_COUNTER += 1
-    if (RETRY_COUNTER == UDP_RETRIES):
-      logging.error("UDP discover failed")
-      sys.exit(1)
-    else:
-      return updDiscover()
+def udp_discover():
+    """Find a Snapmaker 2.0 on the local network via UDP broadcast."""
+    for attempt in range(1, UDP_RETRIES + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.settimeout(UDP_TIMEOUT)
+            sock.sendto(b"discover", (BROADCAST_ADDRESS, DISCOVER_PORT))
+            try:
+                reply, _ = sock.recvfrom(BUFFER_SIZE)
+            except TimeoutError:
+                log.debug("UDP discovery attempt %d timed out", attempt)
+                continue
+        return reply.decode(errors="replace").split("|")[0].split("@")[-1]
+    log.error("UDP discovery failed")
+    sys.exit(1)
 
 
-# Run Main Program
-if __name__ == "__main__":
-  # Check if running inside a HA Addon container
-  if os.path.exists("/data/options.json"):
-    logging.debug("Running inside a HA Addon container")
+# ------------------------------------------------------------------------------
+# Snapmaker API
+# ------------------------------------------------------------------------------
+def _read_saved_token():
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as file:
+            return file.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def _save_token(token):
+    try:
+        with open(TOKEN_FILE, "w", encoding="utf-8") as file:
+            file.write(token)
+    except OSError as err:
+        log.error("Unable to save token to %s: %s", TOKEN_FILE, err)
+        sys.exit(1)
+    log.info("Token received and saved to %s", TOKEN_FILE)
+
+
+def get_sm_token(connect_ip):
+    """Return a Snapmaker API token, from the token file or a new pairing."""
+    sm_url = f"http://{connect_ip}:{SM_PORT}/api/v1/connect"
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    sm_token = _read_saved_token()
+    if sm_token:
+        try:
+            response = requests.post(
+                sm_url,
+                data={"token": sm_token},
+                headers=headers,
+                timeout=HTTP_TIMEOUT,
+            )
+        except requests.exceptions.RequestException as err:
+            log.error("Error connecting to Snapmaker with saved token: %s", err)
+            return None
+        if response.ok:
+            return sm_token
+        log.warning(
+            "Snapmaker rejected the saved token (HTTP %s), requesting a new one",
+            response.status_code,
+        )
+
+    log.info("No valid Snapmaker token, requesting a new one")
     while True:
-      try:
-        main()
-        time.sleep(60)
-      except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        time.sleep(60)
-  else:
-    logging.debug("Not running inside a HA Addon container")
-    main()
-    sys.exit(0)
+        try:
+            response = requests.post(sm_url, timeout=HTTP_TIMEOUT)
+            response.raise_for_status()
+            if "Failed" in response.text:
+                log.error(response.text)
+                log.error("Binding failed, please restart the add-on")
+                sys.exit(1)
+
+            sm_token = response.json().get("token")
+            log.info("Please authorize the connection on the touchscreen.")
+            time.sleep(10)
+
+            response = requests.post(
+                sm_url,
+                data={"token": sm_token},
+                headers=headers,
+                timeout=HTTP_TIMEOUT,
+            )
+            response.raise_for_status()
+            if sm_token and response.json().get("token") == sm_token:
+                _save_token(sm_token)
+                return sm_token
+            log.warning("Connection was not authorized yet, retrying")
+        except requests.exceptions.RequestException as err:
+            log.error("Request failed: %s", err)
+            time.sleep(20)
+        except json.JSONDecodeError as err:
+            log.error("Failed to decode JSON from Snapmaker: %s", err)
+            sys.exit(1)
+
+
+def read_status(connect_ip, sm_token):
+    """Read the current status from the Snapmaker and normalize it."""
+    log.info("Reading Snapmaker status...")
+    sm_api = f"http://{connect_ip}:{SM_PORT}/api/v1/status"
+    try:
+        response = requests.get(sm_api, params={"token": sm_token}, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        sm_status = response.json()
+    except (requests.exceptions.RequestException, ValueError) as err:
+        log.error("Reading the status failed: %s", err)
+        return {"status": "UNAVAILABLE", "ip": connect_ip, "error": str(err)}
+
+    log.debug("Snapmaker status: %s", sm_status)
+    sm_status["ip"] = connect_ip
+
+    tool_head = sm_status.get("toolHead")
+    if tool_head == "TOOLHEAD_3DPRINTING_1":
+        if sm_status.get("nozzleTemperature") is None:
+            sm_status["toolHead"] = "Dual Extruder"
+            sm_status["nozzleTemperature"] = sm_status.get("nozzleTemperature1")
+            sm_status["nozzleTargetTemperature"] = sm_status.get("nozzleTargetTemperature1")
+        else:
+            sm_status["toolHead"] = "Extruder"
+    elif tool_head in TOOLHEADS:
+        sm_status["toolHead"] = TOOLHEADS[tool_head]
+    log.debug("Current toolhead: %s", sm_status.get("toolHead"))
+
+    # Keep the formats of earlier versions, existing templates rely on them.
+    sm_status["progress"] = "{:0.1f}".format((sm_status.get("progress") or 0) * 100)
+    for key in ("estimatedTime", "elapsedTime", "remainingTime"):
+        sm_status[key] = str(timedelta(seconds=sm_status.get(key) or 0))
+
+    return sm_status
+
+
+# ------------------------------------------------------------------------------
+# Publishing
+# ------------------------------------------------------------------------------
+def post_webhook(status):
+    """Send the status to the Home Assistant webhook."""
+    headers = {}
+    if SUPERVISOR_TOKEN and HA_WEBHOOK_URL.startswith("http://supervisor/"):
+        headers["Authorization"] = f"Bearer {SUPERVISOR_TOKEN}"
+    try:
+        response = requests.post(HA_WEBHOOK_URL, json=status, headers=headers, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as err:
+        log.error("Could not send the status to the Home Assistant webhook: %s", err)
+        return
+    log.info("Status sent to the Home Assistant webhook")
+
+
+def post_mqtt(status):
+    """Publish the status to the MQTT broker as a retained message."""
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="snapmaker-monitor")
+    if MQTT_USER:
+        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
+    try:
+        client.connect(MQTT_BROKER, MQTT_PORT, keepalive=30)
+        client.loop_start()
+        try:
+            info = client.publish(MQTT_TOPIC, json.dumps(status, default=str), qos=1, retain=True)
+            info.wait_for_publish(timeout=HTTP_TIMEOUT)
+            published = info.is_published()
+        finally:
+            client.disconnect()
+            client.loop_stop()
+    except (OSError, ValueError, RuntimeError) as err:
+        log.error("Could not publish to MQTT broker %s:%s: %s", MQTT_BROKER, MQTT_PORT, err)
+        return
+    if not published:
+        log.error(
+            "MQTT broker %s:%s did not confirm the message, check the address and credentials",
+            MQTT_BROKER,
+            MQTT_PORT,
+        )
+        return
+    log.info("Status published to MQTT topic %s", MQTT_TOPIC)
+
+
+def post_status(status):
+    """Send the status to every configured target."""
+    log.debug("Status: %s", json.dumps(status, default=str, indent=2))
+    if HA_WEBHOOK_URL:
+        post_webhook(status)
+    if MQTT_BROKER:
+        post_mqtt(status)
+    if not HA_WEBHOOK_URL and not MQTT_BROKER:
+        log.warning("No webhook or MQTT broker configured, status not sent")
+
+
+# ------------------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------------------
+def check_config():
+    """Exit early on configuration that can never work."""
+    if HA_WEBHOOK_URL:
+        parsed = requests.utils.urlparse(HA_WEBHOOK_URL)
+        if not (parsed.scheme and parsed.netloc):
+            log.error("Webhook URL %s is not a valid URL", HA_WEBHOOK_URL)
+            sys.exit(1)
+
+
+def main(connect_ip):
+    """Read the Snapmaker status once and send it."""
+    for retry in range(REACHABLE_RETRIES):
+        if is_reachable(connect_ip, SM_PORT):
+            break
+        log.warning(
+            "Snapmaker (%s:%s) not reachable, retrying in %d minute(s)",
+            connect_ip,
+            SM_PORT,
+            retry,
+        )
+        post_status({"status": "UNAVAILABLE", "ip": connect_ip})
+        time.sleep(retry * 60)
+    else:
+        log.error(
+            "Snapmaker (%s:%s) not reachable after %d retries",
+            connect_ip,
+            SM_PORT,
+            REACHABLE_RETRIES,
+        )
+        post_status({"status": "UNAVAILABLE", "ip": connect_ip})
+        sys.exit(1)
+
+    sm_token = get_sm_token(connect_ip)
+    if not sm_token:
+        post_status({"status": "UNAVAILABLE", "ip": connect_ip})
+        return
+    log.debug("Connected with token %s", mask(sm_token))
+    post_status(read_status(connect_ip, sm_token))
+
+
+def run():
+    """Entry point."""
+    check_config()
+
+    connect_ip = SM_IP
+    if not connect_ip:
+        log.info("No Snapmaker IP set, trying to discover it")
+        connect_ip = udp_discover()
+    if not validate_ip_address(connect_ip):
+        log.error("Snapmaker IP (%s) is not a valid IP address", connect_ip)
+        sys.exit(1)
+
+    if not IN_ADDON:
+        main(connect_ip)
+        return
+
+    log.debug("Running inside a Home Assistant add-on container")
+    while True:
+        try:
+            main(connect_ip)
+        except Exception:  # keep the service alive, s6 only restarts on exit
+            log.exception("An unexpected error occurred")
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    run()
