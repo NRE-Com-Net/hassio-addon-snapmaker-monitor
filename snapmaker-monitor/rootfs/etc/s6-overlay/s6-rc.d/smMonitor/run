@@ -1,55 +1,51 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# Home Assistant Community Add-on: Snapmaker Monitor
-# Runs Snapmaker Monitor script
+# Home Assistant Add-on: Snapmaker Monitor
+# Runs the Snapmaker Monitor script
 # ==============================================================================
 
 bashio::log.info "Starting Snapmaker Monitor..."
 
-if bashio::config.has_value 'log_level'; then
-    log_level=$(bashio::config 'log_level')
-    export LOG_LEVEL=${log_level}
-fi
+export LOG_LEVEL
+LOG_LEVEL=$(bashio::config 'log_level' 'info')
+
+export SM_IP
+SM_IP=$(bashio::config 'sm_ip')
+
+export SM_PORT
+SM_PORT=$(bashio::config 'sm_port' '8080')
 
 if bashio::config.has_value 'ha_webhook_id'; then
-    ha_webhook_id=$(bashio::config 'ha_webhook_id')
-    export HA_WEBHOOK_ID=${ha_webhook_id}
+    export HA_WEBHOOK_ID
+    HA_WEBHOOK_ID=$(bashio::config 'ha_webhook_id')
 fi
 
-if bashio::config.has_value 'sm_ip'; then
-    sm_ip=$(bashio::config 'sm_ip')
-    export SM_IP=${sm_ip}
-fi
-
-if bashio::config.has_value 'sm_port'; then
-    sm_port=$(bashio::config 'sm_port')
-    export SM_PORT=${sm_port}
-fi
+export MQTT_TOPIC
+MQTT_TOPIC=$(bashio::config 'mqtt_topic' 'snapmaker/status')
 
 if bashio::config.has_value 'mqtt_broker'; then
-    mqtt_broker=$(bashio::config 'mqtt_broker')
-    export MQTT_BROKER=${mqtt_broker}
+    export MQTT_BROKER MQTT_PORT MQTT_USER MQTT_PASSWORD
+    MQTT_BROKER=$(bashio::config 'mqtt_broker')
+    MQTT_PORT=$(bashio::config 'mqtt_port' '1883')
+    MQTT_USER=$(bashio::config 'mqtt_user' '')
+    MQTT_PASSWORD=$(bashio::config 'mqtt_password' '')
+elif ! bashio::config.has_value 'ha_webhook_id' \
+    && bashio::services.available 'mqtt'; then
+    # Neither a webhook nor a broker is configured, so fall back to the
+    # MQTT broker add-on (e.g. Mosquitto) that Home Assistant provides.
+    bashio::log.info "Using the MQTT service provided by Home Assistant"
+    export MQTT_BROKER MQTT_PORT MQTT_USER MQTT_PASSWORD
+    MQTT_BROKER=$(bashio::services 'mqtt' 'host')
+    MQTT_PORT=$(bashio::services 'mqtt' 'port')
+    MQTT_USER=$(bashio::services 'mqtt' 'username')
+    MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
 fi
 
-if bashio::config.has_value 'mqtt_port'; then
-    mqtt_port=$(bashio::config 'mqtt_port')
-    export MQTT_PORT=${mqtt_port}
-fi
-
-if bashio::config.has_value 'mqtt_topic'; then
-    mqtt_topic=$(bashio::config 'mqtt_topic')
-    export MQTT_TOPIC=${mqtt_topic}
-fi
-
-if bashio::config.has_value 'mqtt_user'; then
-    mqtt_user=$(bashio::config 'mqtt_user')
-    export MQTT_USER=${mqtt_user}
-fi
-
-if bashio::config.has_value 'mqtt_password'; then
-    mqtt_password=$(bashio::config 'mqtt_password')
-    export MQTT_PASSWORD=${mqtt_password}
+if [[ -z "${HA_WEBHOOK_ID:-}" && -z "${MQTT_BROKER:-}" ]]; then
+    bashio::log.warning \
+        "Neither ha_webhook_id nor an MQTT broker is configured," \
+        "the printer status will not be sent anywhere."
 fi
 
 exec python3 /app/smStatus.py
