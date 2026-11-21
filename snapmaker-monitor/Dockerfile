@@ -11,7 +11,7 @@ COPY requirements.txt /tmp/
 # requests and paho-mqtt are pure Python, so no compiler toolchain is needed.
 RUN \
   apk add --no-cache --virtual .build-dependencies \
-  py3-pip=26.1.2-r0 \
+  py3-pip=26.1.2-r1 \
   \
   && apk add --no-cache \
   python3=3.14.10-r1 \
