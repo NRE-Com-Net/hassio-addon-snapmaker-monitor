@@ -14,7 +14,7 @@ RUN \
   py3-pip=26.1.2-r1 \
   \
   && apk add --no-cache \
-  python3=3.14.10-r1 \
+  python3=3.14.10-r2 \
   \
   && pip3 install --no-cache-dir -r /tmp/requirements.txt \
   \
